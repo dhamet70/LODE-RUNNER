@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Lode Runner</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+        }
+        #game-container {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%); 
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.85.0/phaser.min.js"></script>
+</head>
+<body>
+    
+    <div id="game-container"></div>
+
+    <script>
+        // Define the game scene
+        class MainScene extends Phaser.Scene {
+            constructor() {
+                super('MainScene');
+                
+                // Game variables
+                this.player = null;
+                this.cursors = null;
+                this.platforms = null;
+                this.ladders = null;
+                this.gold = null;
+                this.enemies = null;
+                this.score = 0;
+                this.scoreText = null;
+                this.diggedTiles = [];
+                this.digCooldown = 0;
+                this.isClimbing = false;
+                this.gameOver = false;
+                this.level = [
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "B                               B",
+    "B    G     G     G     G        B",
+    "B PPPPPPPPLPPPPPPPPLPPPPPPPP    B",
+    "B         L        L            B",
+    "B       G L        L G          B",
+    "B     PPPPLPPPPP   L PPPPPPP    B",
+    "B         L        L        G   B",
+    "B       G L    G   LPPPPPPPPPPPPB",
+    "B         LPPPBBPPPL            B",
+    "B         L          G          B",
+    "B       G L                G    B",
+    "B      PPPLPLP   PPPPPPPPPPPPPPPB",
+    "B          PL      G            B",
+    "B    G      L               G   B",
+    "B           LPPP    PPPPPP      B",
+    "B           L        G          B",
+    "B   G    G  L             PPPPP B",
+    "B   PPPPPPPPLPPPP  PPPPP        B",
+    "B           L              PPPPPB",
+    "B           L      PPPPP        B",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+];
+                this.tileWidth = 30;
+                this.tileHeight = 30;
+            }
+            
+            preload() {
+
+                // Load assets
+
+                
+                this.load.spritesheet('player', 'https://raw.githubusercontent.com/photonstorm/phaser3-examples/master/public/assets/sprites/dude.png', { frameWidth: 32, frameHeight: 48 });
+                this.load.image('platform', 'assets/level/brick-break0.png');
+                this.load.image('wall', 'assets/level/brick-solid.png');
+                this.load.image('ladder', 'assets/level/ladder-30x30.png');
+                this.load.image('gold', 'assets/level/gold.png');
+                this.load.image('enemy', 'assets/player/fall-left.png');
+                this.load.atlas('flares', 'assets/shoot/flares.png', 'assets/shoot/flares.json');
+            }
+            
+            create() {
+               // this.emitter = new Phaser.Events.EventEmitter();
+                
+               
+                // Create groups for game objects
+                this.platforms = this.physics.add.staticGroup();
+                this.ladders = this.physics.add.staticGroup();
+                this.gold = this.physics.add.group();
+                this.enemies = this.physics.add.group();
+                this.diggedTiles = [];
+                
+                // Build level from the map
+                this.buildLevel();
+                
+                // Create player
+                this.player = this.physics.add.sprite(100, 150, 'player').setScale(0.8, 0.8);
+                this.player.setBounce(0.1);
+                this.player.setCollideWorldBounds(true);
+                
+                // Create animations
+                this.anims.create({
+                    key: 'left',
+                    frames: this.anims.generateFrameNumbers('player', { start: 0, end: 3 }),
+                    frameRate: 10,
+                    repeat: -1
+                });
+                
+                this.anims.create({
+                    key: 'turn',
+                    frames: [ { key: 'player', frame: 4 } ],
+                    frameRate: 20
+                });
+                
+                this.anims.create({
+                    key: 'right',
+                    frames: this.anims.generateFrameNumbers('player', { start: 5, end: 8 }),
+                    frameRate: 10,
+                    repeat: -1
+                });
+                
+                // Add colliders
+                this.physics.add.collider(this.player, this.platforms);
+                this.physics.add.collider(this.enemies, this.platforms);
+                this.physics.add.collider(this.gold, this.platforms);
+                
+                // Add overlap handlers
+                this.physics.add.overlap(this.player, this.gold, this.collectGold, null, this);
+                this.physics.add.overlap(this.player, this.enemies, this.hitEnemy, null, this);
+                this.physics.add.overlap(this.player, this.ladders, this.onLadder, null, this);
+                this.physics.add.overlap(this.enemies, this.ladders, this.enemyOnLadder, null, this);
+                
+                // Add input listeners
+                this.cursors = this.input.keyboard.createCursorKeys();
+                
+                // Add dig keys
+                this.digLeft = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Z);
+                this.digRight = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.X);
+                
+                // Add score text
+               // this.scoreText = this.add.text(16, 16, 'Score: 0', { fontSize: '32px', fill: '#FFF' });
+                this.scoreText = this.add.text(20, 20, 'Score: 0', { fontSize: '32px', fill: '#FFF' });
+this.add.text(20, 60,
+`Arrow keys: Move
+Z: Dig Left
+X: Dig Right`, 
+{ fontSize: '16px', fill: '#FFF' });
+
+                // Add instructions
+               // this.add.text(16, 50, 'Arrow keys: Move, Z: Dig Left, X: Dig Right', { fontSize: '16px', fill: '#FFF' });
+            }
+            
+            buildLevel() {
+                for (let y = 0; y < this.level.length; y++) {
+                    for (let x = 0; x < this.level[y].length; x++) {
+                        const posX = x * this.tileWidth;
+                        const posY = y * this.tileHeight;
+                        
+                        switch (this.level[y][x]) {
+                            case 'B': // Border/wall
+                                this.platforms.create(posX , posY , 'wall')
+                                    //.setScale(1.3, 1.4)
+                                    .refreshBody()
+                                    .setTint(0xBB7700)
+                                    .setData('gridX', x)
+                                    .setData('gridY', y);
+                                break;
+                            case 'P': // Platform
+                                this.platforms.create(posX , posY , 'platform')
+                                    //.setScale(1.4, 1.4)
+                                    .refreshBody()
+                                    .setTint(0xBB7700)
+                                    .setData('gridX', x)
+                                    .setData('gridY', y)
+                                    .setData('diggable', true);
+                                break;
+                            case 'L': // Ladder
+                                //this.ladders.create(posX + this.tileWidth/2, posY + this.tileHeight/2, 'ladder')
+                                this.ladders.create(posX , posY+5 , 'ladder')
+                                    //.setScale(0.8, 1)
+                                    .refreshBody()
+                                    .setTint(0x00FFFF)
+                                    .setData('gridX', x)
+                                    .setData('gridY', y);
+                                break;
+                            case 'G': // Gold
+                                const gold = this.gold.create(posX , posY , 'gold')
+                                    .setScale(0.6)
+                                    .setBounce(0.2);
+                                gold.setCollideWorldBounds(true);
+                                break;
+                        }
+                    }
+                }
+                
+                // Add enemies at specific positions
+                const enemyPositions = [
+                    {x: 300, y: 200},
+                    {x: 500, y: 300},
+                    {x: 200, y: 400},
+                    {x: 700, y: 500},
+                    {x: 900, y: 300},
+                    {x: 400, y: 600},
+                ];
+
+                
+                
+                enemyPositions.forEach(pos => {
+                    const enemy = this.enemies.create(pos.x, pos.y, 'enemy');
+                    enemy.setCollideWorldBounds(true);
+                    enemy.setBounce(0);
+                    enemy.setTint(0x48D1CC);
+                    
+                    // Enemy AI state
+                    enemy.ai = {
+                        state: 'patrol',         // patrol, chase, climb
+                        direction: -1,            // 1 = right, -1 = left
+                        onLadder: false,
+                        ladderDirection: 0,      // 1 = up, -1 = down, 0 = not climbing
+                        thinkTime: 2,            // Counter for decision making
+                        targetX: 0,              // Targetfalse X position
+                        targetY: 0,              // Target Y position
+                        path: [],                // Path to player
+                        stuckTimer: 0            // Detect if stuck
+                    };
+                });
+            }
+            
+            update() {
+                if (this.gameOver) {
+                    return;
+                }
+                
+                // Handle digging
+                this.handleDigging();
+                
+                // Check and restore diggedTiles
+                this.updateDiggedTiles();
+                
+                // Handle player movement
+                this.handlePlayerMovement();
+                
+                // Handle enemy movement
+                this.updateEnemies();
+            }
+            
+            handleDigging() {
+                // Dig cooldown
+                if (this.digCooldown > 0) {
+                    this.digCooldown--;
+                }
+                
+                // If player is on a platform and not on a ladder
+                if (this.player.body.onFloor()) {// && !this.isClimbing
+                    // Dig left
+                    if (Phaser.Input.Keyboard.JustDown(this.digLeft) && this.digCooldown === 0) {
+                        this.digHole(-1);
+                    }
+                    
+                    // Dig right
+                    if (Phaser.Input.Keyboard.JustDown(this.digRight) && this.digCooldown === 0) {
+                        this.digHole(1);
+                    }
+                }
+            }
+            
+            digHole(direction) {
+                const playerX = Math.ceil(this.player.x / this.tileWidth);
+                const playerY = Math.ceil(this.player.y / this.tileHeight);
+                
+                // Check the tile below and to the side of the player
+                const targetX = playerX + direction;
+                const targetY = playerY + 1;
+                
+                // Find if there's a platform at this position
+                this.platforms.getChildren().forEach((platform) => {
+                    if (platform.getData('gridX') === targetX && 
+                        platform.getData('gridY') === targetY && platform.getData('diggable')) {
+                        
+                        // Dig the hole
+                        platform.setVisible(false);
+                        platform.body.enable = false;
+                        
+                        // Add to diggedTiles to restore later
+                        this.diggedTiles.push({
+                            platform: platform,
+                            time: 300 // Restore after 100 game ticks
+                        });
+                        
+                        // Set cooldown
+                        this.digCooldown = 0;
+                    }
+                });
+            }
+            
+            updateDiggedTiles() {
+                // Update the timer for dug tiles
+                for (let i = this.diggedTiles.length - 1; i >= 0; i--) {
+                    this.diggedTiles[i].time--;
+                    
+                    // Restore the tile when timer reaches 0
+                    if (this.diggedTiles[i].time <= 0) {
+                        this.diggedTiles[i].platform.setVisible(true);
+                        this.diggedTiles[i].platform.body.enable = true;
+                        this.diggedTiles.splice(i, 1);
+                    }
+                }
+            }
+            
+            handlePlayerMovement() {
+                // Reset climbing flag each frame
+                this.isClimbing = false;
+                
+                // Check if player is on a ladder
+                this.physics.overlap(this.player, this.ladders, () => {
+                    this.isClimbing = true;
+                });
+                
+                if (this.isClimbing) {
+                    // On ladder, reduce gravity
+                    this.player.body.setAllowGravity(false);
+                    
+                    // Climb up
+                    if (this.cursors.up.isDown) {
+                        this.player.setVelocityY(-150);
+                    } 
+                    // Climb down
+                    else if (this.cursors.down.isDown) {
+                        this.player.setVelocityY(150);
+                    }
+                    // Stop when not pressing
+                    else {
+                        this.player.setVelocityY(0);
+                    }
+                } else {
+                    // Normal gravity when not on ladder
+                    this.player.body.setAllowGravity(true);
+                }
+                
+                // Move left
+                if (this.cursors.left.isDown) {
+                    this.player.setVelocityX(-100);
+                    this.player.anims.play('left', true);
+                }
+                // Move right
+                else if (this.cursors.right.isDown) {
+                    this.player.setVelocityX(100);
+                    this.player.anims.play('right', true);
+                }
+                // Stop
+                else {
+                    this.player.setVelocityX(0);
+                    this.player.anims.play('turn');
+                }
+                
+                // Jump only if on the ground and not climbing
+                if (this.cursors.up.isDown && this.player.body.onFloor() && !this.isClimbing) {
+                    this.player.setVelocityY(-430);
+                }
+            }
+            
+            updateEnemies() {
+                const playerGridX = Math.floor(this.player.x / this.tileWidth);
+                const playerGridY = Math.floor(this.player.y / this.tileHeight);
+                
+                this.enemies.getChildren().forEach(enemy => {
+                    const enemyGridX = Math.floor(enemy.x / this.tileWidth);
+                    const enemyGridY = Math.floor(enemy.y / this.tileHeight);
+                    
+                    // Update thinking timer
+                    if (enemy.ai.thinkTime > 0) {
+                        enemy.ai.thinkTime--;
+                    }
+                    
+                    // Check if enemy is on ladder
+                    enemy.ai.onLadder = false;
+                    this.physics.overlap(enemy, this.ladders, () => {
+                        enemy.ai.onLadder = true;
+                    });
+                    
+                    // If not on ladder but was climbing, reset state
+                    if (!enemy.ai.onLadder && enemy.ai.state === 'climb') {
+                        enemy.ai.state = 'chase';
+                        enemy.ai.ladderDirection = 0;
+                        enemy.body.setAllowGravity(true);
+                    }
+                    
+                    // Handle AI states
+                    if (enemy.ai.thinkTime <= 0) {
+                        // Decide what to do next
+                        this.decideEnemyAction(enemy, enemyGridX, enemyGridY, playerGridX, playerGridY);
+                        enemy.ai.thinkTime = 10; // Think every 10 frames
+                    }
+                    
+                    // Apply movement based on current state
+                    this.moveEnemy(enemy);
+                    
+                    // Check if enemy is stuck
+                    if (Math.abs(enemy.body.velocity.x) < 10 && Math.abs(enemy.body.velocity.y) < 10 && 
+                        enemy.ai.state !== 'climb' && !enemy.ai.onLadder && enemy.body.onFloor()) {
+                        enemy.ai.stuckTimer++;
+                        
+                        // If stuck for too long, change direction
+                        if (enemy.ai.stuckTimer > 30) {
+                            enemy.ai.direction *= -1;
+                            enemy.ai.stuckTimer = 0;
+                        }
+                    } else {
+                        enemy.ai.stuckTimer = 0;
+                    }
+                });
+            }
+            
+            decideEnemyAction(enemy, enemyGridX, enemyGridY, playerGridX, playerGridY) {
+                // Calculate horizontal distance to player
+                const distX = playerGridX - enemyGridX;
+                const distY = playerGridY - enemyGridY;
+                const absDiffX = Math.abs(distX);
+                const absDiffY = Math.abs(distY);
+                
+                // Check if player is close by
+                if (absDiffX < 6 && absDiffY < 6) {
+                    enemy.ai.state = 'chase';
+                    
+                    // If on same level, chase horizontally
+                    if (absDiffY < 2 && enemy.body.onFloor()) {
+                        enemy.ai.direction = distX > 0 ? 1 : -1;
+                    }
+                    // If player is above or below, look for ladders
+                    else if (enemy.ai.onLadder) {
+                        enemy.ai.state = 'climb';
+                        enemy.ai.ladderDirection = distY > 0 ? 1 : -1;
+                    } 
+                    // If not on ladder but need to go up/down
+                    else if (absDiffY > 1) {
+                        // Look for ladders nearby
+                        const nearestLadder = this.findNearestLadder(enemyGridX, enemyGridY);
+                        if (nearestLadder) {
+                            // Move towards ladder
+                            enemy.ai.direction = nearestLadder.x > enemyGridX ? 1 : -1;
+                        }
+                    }
+                } else {
+                    // Patrol behavior if player is far away
+                    enemy.ai.state = 'patrol';
+                    
+                    // Randomly change direction sometimes
+                    if (Phaser.Math.Between(0, 100) < 2) {
+                        enemy.ai.direction *= -1;
+                    }
+                }
+            }
+            
+            findNearestLadder(gridX, gridY) {
+                let nearestLadder = null;
+                let closestDistance = 999;
+                
+                this.ladders.getChildren().forEach(ladder => {
+                    const ladderGridX = ladder.getData('gridX');
+                    const ladderGridY = ladder.getData('gridY');
+                    
+                    // Check if ladder is close by
+                    const distance = Math.abs(gridX - ladderGridX);
+                    
+                    if (distance < closestDistance) {
+                        closestDistance = distance;
+                        nearestLadder = {x: ladderGridX, y: ladderGridY};
+                    }
+                });
+                
+                return closestDistance < 8 ? nearestLadder : null;
+            }
+            
+            moveEnemy(enemy) {
+                const ENEMY_SPEED = 35;
+                
+                // Handle different states
+                switch (enemy.ai.state) {
+                    case 'patrol':
+                    case 'chase':
+                        // Horizontal movement
+                        if (enemy.body.onFloor() && !enemy.ai.onLadder) {
+                            enemy.setVelocityX(ENEMY_SPEED * enemy.ai.direction);
+                        }
+                        // Change direction when hitting walls
+                        if (enemy.body.blocked.right) {
+                            enemy.ai.direction = -1;
+                        } else if (enemy.body.blocked.left) {
+                            enemy.ai.direction = 1;
+                        }
+                        break;
+                    
+                    case 'climb':
+                        if (enemy.ai.onLadder) {
+                            // Stop horizontal movement on ladder
+                            enemy.setVelocityX(0);
+                            
+                            // Turn off gravity while climbing
+                            enemy.body.setAllowGravity(false);
+                            
+                            // Move up or down on ladder
+                            enemy.setVelocityY(ENEMY_SPEED * enemy.ai.ladderDirection);
+                        } else {
+                            // If not on ladder anymore, resume normal movement
+                            enemy.body.setAllowGravity(true);
+                            enemy.ai.state = 'chase';
+                        }
+                        break;
+                }
+            }
+            
+            enemyOnLadder(enemy, ladder) {
+                // Just for overlap detection, actual logic in update
+            }
+            
+            collectGold(player, gold) {
+               
+                const wisp = this.add.particles(gold.x, gold.y, 'flares',
+                    {
+                    frame: 'white',
+                    color: [ 0xfacc22, 0xf89800, 0xf83600, 0x9f0404 ],
+                    colorEase: 'quad.out',
+                    lifespan: 2400,
+                    angle: { min: -100, max: -80 },
+                    scale: { start: 0.70, end: 0, ease: 'sine.out' },
+                    speed: 100,
+                    advance: 2000,
+                    blendMode: 'ADD'
+                });
+                wisp.explode(3);
+
+                gold.disableBody(true, true);
+                
+                this.score += 10;
+                this.scoreText.setText('Score: ' + this.score);
+                
+                // Check if all gold is collected
+                if (this.gold.countActive(true) === 0) {
+                    // Level complete
+                    //this.add.text(400, 300, 'LEVEL COMPLETE!', { fontSize: '32px', fill: '#FFF' })
+                        //.setOrigin(0.5);
+                        this.add.text(this.cameras.main.width / 2, this.cameras.main.height / 2, 'LEVEL COMPLETE!', { fontSize: '32px', fill: '#FFF' })
+    .setOrigin(0.5);
+                }
+            }
+            
+            hitEnemy(player, enemy) {
+                // Game over
+                this.physics.pause();
+                player.setTint(0xff0000);
+                player.anims.play('turn');
+                this.gameOver = true;
+                
+                //this.add.text(400, 300, 'GAME OVER', { fontSize: '32px', fill: '#FFF' })
+                    //.setOrigin(0.5);
+                    this.add.text(this.cameras.main.width / 2, this.cameras.main.height / 2, 'GAME OVER', { fontSize: '32px', fill: '#FFF' })
+    .setOrigin(0.5);
+            }
+            
+            onLadder(player, ladder) {
+                // This is just for overlap detection, actual logic is in update
+            }
+        }
+        
+        // Game configuration
+        const config = {
+            type: Phaser.AUTO,
+            width: 960,
+            height: 630,
+            parent: 'game-container',
+            backgroundColor: '#000',
+            physics: {
+                default: 'arcade',
+                arcade: {
+                    gravity: { y: 1000 },
+                    debug: false
+                }
+            },
+            scene: [MainScene]
+        };
+        
+        // Initialize the game
+        const game = new Phaser.Game(config);
+    </script>
+
+
+</body>
+</html>
